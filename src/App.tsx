@@ -36,6 +36,9 @@ function App() {
   When all topics (${questions.map(q => q.category).join(', ')}) seem reasonably covered, or if the user indicates they have no more to add, provide a polite concluding message and then, on a new line, include the special marker: [CONVERSATION_COMPLETE]
   Do not use markdown formatting in your responses. Keep your responses concise and focused.`;
 
+  // Initialise a session id for the potential conversation between user and Iai
+  const [sessionId] = useState(() => generateId());
+
   useEffect(() => {
     if (messages.length === 0) {
       const welcome: Message = {
@@ -46,6 +49,7 @@ function App() {
       };
 
       setMessages([welcome]);
+      
 
       // LLM conversation history starts empty. The 'welcome' message is for display only
       // and its content is described to the LLM in the system prompt.
@@ -58,6 +62,32 @@ function App() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const saveConversationToBackend = async (
+    conversationMessages: Message[],
+    finalConceptData: Record<string, string>,
+    currentSessionId: string
+  ) => {
+    try {
+      const response = await fetch('/api/save-conversation', { // New backend endpoint
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: currentSessionId,
+          messages: conversationMessages,
+          conceptData: finalConceptData,
+        }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to parse error response" }));
+        console.error('Failed to save conversation to backend:', response.status, errorData);
+      } else {
+        console.log('Conversation saved successfully to backend.');
+      }
+    } catch (error) {
+      console.error('Error calling save-conversation endpoint:', error);
+    }
+  };
   
   const getAIResponse = async (
     currentUserInput: string | null, // Can be null for the initial call
@@ -85,43 +115,23 @@ function App() {
       const data = await response.json();
       let aiReplyContent = data.reply;
 
-      if (aiReplyContent.includes('[CONVERSATION_COMPLETE]')) {
-        setConversationComplete(true);
-        aiReplyContent = aiReplyContent.replace('[CONVERSATION_COMPLETE]', '').trim();
-      }
-
-      // AI message object generated after obtaining response from backend endpoint
-      const aiMessage: Message = {
-        id: generateId(),
-        content: aiReplyContent,
-        role: 'ai',
-        timestamp: Date.now(),
-      };
-
-      setMessages(prev => [...prev, aiMessage]);
-      setLlmConversationHistory(prev => [...prev, aiMessage]);
-
-      // ConceptData update logic
-      if (currentUserInput) { // currentUserInput is the text of the user message that the AI just processed
-        // historyForAPI is the history *up to and including* the currentUserInput message
-        // Example 1 (first turn): historyForAPI = [{role: 'user', content: 'User Q1 Answer'}]
-        // Example 2 (second turn): historyForAPI = [{role: 'user', ...}, {role: 'ai', ...}, {role: 'user', content: 'User Q2 Answer'}]
-        
+      // --- ConceptData update logic (Process based on currentUserInput before handling AI reply) ---
+      // This ensures conceptData is updated based on the user's input that led to this AI response.
+      let finalConceptDataForSaving = { ...conceptData }; // Start with current conceptData state
+      if (currentUserInput) {
         let categoryToUpdate: string | undefined = undefined;
         const lastMessageInHistoryForAPI = historyForAPI[historyForAPI.length - 1];
 
         // Ensure the currentUserInput matches the last message in historyForAPI and it's a user message
         if (lastMessageInHistoryForAPI && lastMessageInHistoryForAPI.role === 'user' && lastMessageInHistoryForAPI.content === currentUserInput) {
           if (historyForAPI.length === 1) {
-            // This is the very first user message, responding to the implicit first question
             categoryToUpdate = questions[0].category;
           } else if (historyForAPI.length > 1) {
-            // Find the AI message immediately preceding this user input
             const precedingAiMessage = historyForAPI[historyForAPI.length - 2];
             if (precedingAiMessage && precedingAiMessage.role === 'ai') {
               const matchedQuestion = questions.find(q =>
-                precedingAiMessage.content.toLowerCase().includes(q.text.toLowerCase().substring(0, 20)) || // Check against question text
-                precedingAiMessage.content.toLowerCase().includes(q.category.toLowerCase().replace(/_/g, ' ')) // Check against category name
+                precedingAiMessage.content.toLowerCase().includes(q.text.toLowerCase().substring(0, 20)) || 
+                precedingAiMessage.content.toLowerCase().includes(q.category.toLowerCase().replace(/_/g, ' '))
               );
               if (matchedQuestion) {
                 categoryToUpdate = matchedQuestion.category;
@@ -131,12 +141,43 @@ function App() {
         }
 
         if (categoryToUpdate) {
-          setConceptData(prev => ({
-              ...prev,
-              [categoryToUpdate!]: prev[categoryToUpdate!] ? `${prev[categoryToUpdate!]}. ${currentUserInput}` : currentUserInput
-          }));
+          const newEntry = finalConceptDataForSaving[categoryToUpdate] ? `${finalConceptDataForSaving[categoryToUpdate]}. ${currentUserInput}` : currentUserInput;
+          finalConceptDataForSaving = {
+              ...finalConceptDataForSaving,
+              [categoryToUpdate]: newEntry
+          };
+          setConceptData(finalConceptDataForSaving); // Update state for UI
         }
-      } 
+      }
+      // --- End of ConceptData update logic ---
+
+      let isConversationMarkedComplete = false;
+      if (aiReplyContent.includes('[CONVERSATION_COMPLETE]')) {
+        isConversationMarkedComplete = true;
+        aiReplyContent = aiReplyContent.replace('[CONVERSATION_COMPLETE]', '').trim();
+      }
+
+      const aiMessage: Message = {
+        id: generateId(),
+        content: aiReplyContent,
+        role: 'ai',
+        timestamp: Date.now(),
+      };
+
+      // Use functional update to ensure correct state progression for UI messages
+      setMessages(prevMessages => [...prevMessages, aiMessage]);
+
+      // Use functional update for LLM history
+      setLlmConversationHistory(prevLlmHistory => [...prevLlmHistory, aiMessage]);
+
+      if (isConversationMarkedComplete) {
+        setConversationComplete(true); // Set UI state for completion
+        // Construct the complete conversation history to save.
+        // currentHistory (passed to getAIResponse) includes messages up to the last user input.
+        // We add the latest aiMessage to it.
+        const completeConversationToSave = [...currentHistory, aiMessage];
+        saveConversationToBackend(completeConversationToSave, finalConceptDataForSaving, sessionId);
+      }
     } catch (error) {
       console.error("Failed to get AI response:", error);
       const errorMessage: Message = {
@@ -145,8 +186,9 @@ function App() {
         role: 'ai',
         timestamp: Date.now(),
       };
-      setMessages(prev => [...prev, errorMessage]);
-      setLlmConversationHistory(prev => [...prev, errorMessage]); // Also add error to history if needed
+      // Use functional updates for error messages as well
+      setMessages(prevMessages => [...prevMessages, errorMessage]);
+      setLlmConversationHistory(prevLlmHistory => [...prevLlmHistory, errorMessage]);
     } finally {
       setIsTyping(false);
     }
@@ -164,17 +206,18 @@ function App() {
       timestamp: Date.now()
     };
 
-    // Update messages and history immediately for UI responsiveness
-    const updatedMessages = [...messages, userMessage];
-    setMessages(updatedMessages);
-    
+    // Use functional update for messages state to avoid stale closures
+    setMessages(prevMessages => [...prevMessages, userMessage]);
+
+    // llmConversationHistory is updated here and this updated version is passed to getAIResponse.
+    // This ensures `currentHistory` in `getAIResponse` includes the userMessage.
     const updatedLlmHistory = [...llmConversationHistory, userMessage];
     setLlmConversationHistory(updatedLlmHistory);
     
     const currentUserInputText = userInput;
     setUserInput('');
     
-    // Get AI response using the updated history
+    // Pass the LLM history that *includes* the current userMessage
     getAIResponse(currentUserInputText, updatedLlmHistory);
   };
   
@@ -202,7 +245,7 @@ function App() {
     // LLM conversation history starts empty on reset as well.
     setLlmConversationHistory([]);
   };
-  
+
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
