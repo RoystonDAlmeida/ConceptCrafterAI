@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/conversation/process_conversation",
+      "dest": "/api/conversation/process_conversation.js"
+    },
+    {
+      "src": "/api/gemini-chat",
+      "dest": "/api/gemini-chat.js"
+    },
+    {
+      "src": "/api/save-conversation",
+      "dest": "/api/save-conversation.js"
+    }
+  ]
+} 
