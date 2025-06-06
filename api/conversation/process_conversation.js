@@ -2,7 +2,6 @@
 
 const express = require('express');
 const admin = require('firebase-admin');
-const natural = require('natural');
 
 // Initialize Firebase Admin if not already initialized
 if (!admin.apps.length) {
@@ -15,117 +14,146 @@ if (!admin.apps.length) {
     });
 }
 
-// Initialize NLP tools
-const tokenizer = new natural.WordTokenizer();
-const TfIdf = natural.TfIdf;
-const tfidf = new TfIdf();
+// Configuration for pattern matching and scoring
+const CONFIG = {
+    patterns: {
+        visualStyle: ['minimalist', 'vibrant', 'color', 'style', 'visual', 'design'],
+        targetAudience: ['audience', 'target', 'viewer', 'people', 'user'],
+        moodTone: ['calm', 'inspired', 'emotional', 'mood', 'tone', 'feeling'],
+        keyMessage: ['message', 'point', 'takeaway', 'key', 'important']
+    },
+    scoring: {
+        conceptClarity: {
+            lengthDivisor: 50,
+            countDivisor: 3,
+            weight: 0.5
+        },
+        styleSpecificity: {
+            lengthDivisor: 20,
+            countDivisor: 2,
+            weight: 0.5
+        },
+        audienceClarity: {
+            lengthDivisor: 2,
+            countDivisor: 2,
+            weight: 0.5
+        }
+    }
+};
 
 // Process and clean messages
 async function processMessages(messages) {
     return messages.filter(message => {
         const content = message.content.trim().toLowerCase();
-        if (content.length < 3 || 
-            content === 'no' || 
-            content === 'yes' || 
-            content === 'ok' || 
-            content === 'okay') {
-            return false;
-        }
-        return true;
+        return content.length >= 3 && 
+               !['no', 'yes', 'ok', 'okay'].includes(content);
     });
 }
 
 // Extract semantic information from messages
 async function extractSemanticInfo(messages) {
-    const tags = [];
-    const keyMessages = [];
-    const targetAudience = [];
-    const moodTone = [];
-
-    const patterns = {
-        visualStyle: ['minimalist', 'vibrant', 'color', 'style', 'visual', 'design'],
-        targetAudience: ['audience', 'target', 'viewer', 'people', 'user'],
-        moodTone: ['calm', 'inspired', 'emotional', 'mood', 'tone', 'feeling'],
-        keyMessage: ['message', 'point', 'takeaway', 'key', 'important']
+    const extractedData = {
+        tags: [],
+        keyMessages: [],
+        targetAudience: [],
+        moodTone: []
     };
 
     messages.forEach(message => {
         const content = message.content.toLowerCase();
         
-        if (patterns.visualStyle.some(pattern => content.includes(pattern))) {
-            tags.push('visual_style');
-        }
-
-        if (patterns.targetAudience.some(pattern => content.includes(pattern))) {
-            tags.push('target_audience');
-            if (message.role === 'user') {
-                targetAudience.push(message.content);
+        // Check each pattern category
+        Object.entries(CONFIG.patterns).forEach(([category, patterns]) => {
+            if (patterns.some(pattern => content.includes(pattern))) {
+                const tagName = category.replace(/([A-Z])/g, '_$1').toLowerCase();
+                extractedData.tags.push(tagName);
+                
+                if (message.role === 'user') {
+                    const targetArray = category === 'keyMessage' ? 'keyMessages' : 
+                                      category === 'moodTone' ? 'moodTone' :
+                                      category === 'targetAudience' ? 'targetAudience' : null;
+                    if (targetArray) {
+                        extractedData[targetArray].push(message.content);
+                    }
+                }
             }
-        }
+        });
+    });
 
-        if (patterns.moodTone.some(pattern => content.includes(pattern))) {
-            tags.push('mood_tone');
-            if (message.role === 'user') {
-                moodTone.push(message.content);
-            }
-        }
-
-        if (patterns.keyMessage.some(pattern => content.includes(pattern))) {
-            tags.push('key_message');
-            if (message.role === 'user') {
-                keyMessages.push(message.content);
-            }
+    // Remove duplicates
+    Object.keys(extractedData).forEach(key => {
+        if (Array.isArray(extractedData[key])) {
+            extractedData[key] = [...new Set(extractedData[key])];
         }
     });
 
-    return {
-        tags: [...new Set(tags)],
-        keyMessages: [...new Set(keyMessages)],
-        targetAudience: [...new Set(targetAudience)],
-        moodTone: [...new Set(moodTone)]
-    };
+    return extractedData;
 }
 
-// Calculate confidence scores
+// Generic confidence score calculator
+function calculateConfidenceScore(processedData, category) {
+    const config = CONFIG.scoring[category];
+    const data = processedData.extractedData;
+    
+    let lengthScore = 0;
+    let countScore = 0;
+
+    switch(category) {
+        case 'conceptClarity':
+            lengthScore = data.conceptDetails.length / config.lengthDivisor;
+            countScore = data.keyMessages.length / config.countDivisor;
+            break;
+        case 'styleSpecificity':
+            lengthScore = data.visualStyle.length / config.lengthDivisor;
+            countScore = processedData.semanticTags.filter(tag => tag.includes('visual_style')).length / config.countDivisor;
+            break;
+        case 'audienceClarity':
+            lengthScore = data.targetAudience.length / config.lengthDivisor;
+            countScore = processedData.semanticTags.filter(tag => tag.includes('target_audience')).length / config.countDivisor;
+            break;
+    }
+
+    return Math.min(1, (lengthScore + countScore) * config.weight);
+}
+
+// Calculate all confidence scores
 function calculateConfidenceScores(processedData) {
     return {
-        conceptClarity: calculateConceptClarity(processedData),
-        styleSpecificity: calculateStyleSpecificity(processedData),
-        audienceClarity: calculateAudienceClarity(processedData)
+        conceptClarity: calculateConfidenceScore(processedData, 'conceptClarity'),
+        styleSpecificity: calculateConfidenceScore(processedData, 'styleSpecificity'),
+        audienceClarity: calculateConfidenceScore(processedData, 'audienceClarity')
     };
-}
-
-// Helper functions for confidence calculations
-function calculateConceptClarity(processedData) {
-    const conceptLength = processedData.extractedData.conceptDetails.length;
-    const keyMessagesCount = processedData.extractedData.keyMessages.length;
-    return Math.min(1, (conceptLength / 50 + keyMessagesCount / 3) / 2);
-}
-
-function calculateStyleSpecificity(processedData) {
-    const styleLength = processedData.extractedData.visualStyle.length;
-    const styleTags = processedData.semanticTags.filter(tag => tag.includes('visual_style')).length;
-    return Math.min(1, (styleLength / 20 + styleTags / 2) / 2);
-}
-
-function calculateAudienceClarity(processedData) {
-    const audienceCount = processedData.extractedData.targetAudience.length;
-    const audienceTags = processedData.semanticTags.filter(tag => tag.includes('target_audience')).length;
-    return Math.min(1, (audienceCount / 2 + audienceTags / 2) / 2);
 }
 
 // Process individual conversation
 async function processConversation(conversation) {
+    // Extract target audience and mood tone from messages
+    const targetAudience = [];
+    const moodTone = [];
+    
+    conversation.messages.forEach((message, index) => {
+        if (message.role === 'ai' && index < conversation.messages.length - 1) {
+            const aiContent = message.content.toLowerCase();
+            const nextMessage = conversation.messages[index + 1];
+            
+            if (aiContent.includes('target audience') || aiContent.includes('who is your audience')) {
+                targetAudience.push(nextMessage.content);
+            } else if (aiContent.includes('mood') || aiContent.includes('tone') || aiContent.includes('feeling')) {
+                moodTone.push(nextMessage.content);
+            }
+        }
+    });
+
     const processedData = {
         id: conversation.id,
         completedAt: conversation.completedAt,
         sessionId: conversation.sessionId,
         extractedData: {
-            conceptDetails: conversation.conceptData.conceptDetails,
-            keyMessages: [],
-            visualStyle: conversation.conceptData.visualStyle,
-            targetAudience: [],
-            moodTone: []
+            conceptDetails: conversation.conceptData.conceptDetails || '',
+            keyMessages: conversation.conceptData.keyMessages ? [conversation.conceptData.keyMessages] : [],
+            visualStyle: conversation.conceptData.visualStyle || '',
+            targetAudience: targetAudience,
+            moodTone: moodTone
         },
         semanticTags: [],
         processedMessages: [],
@@ -141,9 +169,17 @@ async function processConversation(conversation) {
 
     const semanticInfo = await extractSemanticInfo(processedMessages);
     processedData.semanticTags = semanticInfo.tags;
-    processedData.extractedData.keyMessages = semanticInfo.keyMessages;
-    processedData.extractedData.targetAudience = semanticInfo.targetAudience;
-    processedData.extractedData.moodTone = semanticInfo.moodTone;
+    
+    // Only add semantic info if we don't have original data
+    if (!processedData.extractedData.keyMessages.length) {
+        processedData.extractedData.keyMessages = semanticInfo.keyMessages;
+    }
+    if (!processedData.extractedData.targetAudience.length) {
+        processedData.extractedData.targetAudience = semanticInfo.targetAudience;
+    }
+    if (!processedData.extractedData.moodTone.length) {
+        processedData.extractedData.moodTone = semanticInfo.moodTone;
+    }
 
     processedData.confidenceScores = calculateConfidenceScores(processedData);
 
