@@ -17,11 +17,10 @@ function App() {
         showSafetyResetButton // Destructure the new state
     } = useConversation();
 
-    // Initialize with welcome message
+    // Initialize with AI welcome message
     useEffect(() => {
         handleStartOver();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Intentionally empty to run only on mount, handleStartOver is stable
+    }, []);
 
 
     return (
