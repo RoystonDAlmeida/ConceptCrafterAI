@@ -8,6 +8,28 @@ import { questions, initialMessage } from '../data/questions';
 import { generateId } from '../utils/idGenerator';
 import { processConversation } from '../services/conversationProcessor';
 
+// Define the structure for the video concept summary
+export interface VideoConceptSummary {
+    videoTitleSuggestion: string;
+    coreConcept: string;
+    targetAudience: {
+        description: string;
+        keyTakeaways: string[];
+    };
+    keyMessages: string[];
+    visualElements: {
+        style: string;
+        moodTone: string;
+        imagerySuggestions: string[];
+        colorPalette: string;
+    };
+    contentStructureOutline: Array<{
+        section: string;
+        description: string;
+    }>;
+    additionalNotes: string;
+}
+
 export const useConversation = () => {
     // State management for conversation
     const [messages, setMessages] = useState<Message[]>([]); // All messages in the conversation
@@ -18,6 +40,13 @@ export const useConversation = () => {
     const [sessionId] = useState(() => generateId()); // Unique session identifier
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0); // Tracks current question in sequence
     const [showSafetyResetButton, setShowSafetyResetButton] = useState(false); // Controls visibility of a reset button after a safety error
+    const [isConversationProcessingComplete, setIsConversationProcessingComplete] = useState(false); // New state
+    const [processedMessagesForSummary, setProcessedMessagesForSummary] = useState<Message[] | null>(null);
+    
+    // New state for summarization
+    const [videoSummary, setVideoSummary] = useState<VideoConceptSummary | null>(null);
+    const [isSummarizing, setIsSummarizing] = useState(false);
+    const [summaryError, setSummaryError] = useState<string | null>(null);
 
     // System instructions for the AI model
     const systemInstructionForLLM = `You are ConceptCrafterAI, a friendly and highly efficient assistant. Your goal is to help the user develop a video concept by asking a series of questions.
@@ -92,6 +121,12 @@ export const useConversation = () => {
 
                 const processedData = await processConversation(conversationData);
                 console.log('Conversation processed successfully:', processedData);
+
+                // 'processedData' has a field 'processedMessages' that is an array of Message objects.
+                if (processedData && Array.isArray(processedData.processedMessages)) {
+                    setProcessedMessagesForSummary(processedData.processedMessages);
+                    setIsConversationProcessingComplete(true); // Mark processing as complete
+                }
             } catch (processingError) {
                 console.error('Error processing conversation:', processingError);
             }
@@ -232,9 +267,73 @@ export const useConversation = () => {
         setLlmConversationHistory([]);
         setCurrentQuestionIndex(0);
         setShowSafetyResetButton(false); // Reset the safety error flag
+        setIsConversationProcessingComplete(false); // Reset processing complete flag
 
         const welcome = createMessage(`${initialMessage.text} ${questions[0].text}`, 'ai');
         setMessages([welcome]);
+    };
+
+    /**
+     * Generates a video concept summary by calling the backend API.
+     */
+    const generateConceptSummary = async () => {
+        const messagesToSummarize = processedMessagesForSummary || messages; // Prioritize processed messages
+
+        if (!isConversationProcessingComplete) { // Check if backend processing is done
+            setSummaryError("Conversation is still being processed. Please wait a moment.");
+            return;
+        } else if (!messagesToSummarize.length || messagesToSummarize.every(msg => msg.role === 'ai' && msg.content.includes(initialMessage.text))) {
+                setSummaryError("Conversation processing might not be complete or encountered an issue. Please wait or try again if processing has finished.");
+            return;
+        } else if (messagesToSummarize.length === 1 && messagesToSummarize[0].role === 'ai' && messagesToSummarize[0].content.includes(initialMessage.text)) {
+            setSummaryError("Cannot generate summary for an initial greeting message only.");
+            return;
+        }
+        setIsSummarizing(true);
+        setSummaryError(null);
+        setVideoSummary(null);
+
+        try {
+            const response = await fetch('/api/summarize-conversation', { // Updated API endpoint
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ messages: messagesToSummarize }), // Send processed or current messages
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: "Failed to parse error from summary API" }));
+                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            }
+
+            const summaryData: VideoConceptSummary = await response.json();
+            setVideoSummary(summaryData);
+
+            // Save summarizec conversation to /api/save-summary
+            try {
+                const saveSummaryResponse = await fetch('/api/save-summary', { // You'll need to create this API endpoint
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: sessionId, 
+                        summary: summaryData,
+                    }),
+                });
+                if (!saveSummaryResponse.ok) {
+                    console.error('Failed to save summary to backend:', await saveSummaryResponse.text());
+                } else {
+                    console.log('Video concept summary saved to backend.');
+                }
+            } catch (saveError) {
+                console.error('Error calling save-summary endpoint:', saveError);
+            }
+        } catch (error: any) {
+            console.error("Failed to generate summary:", error);
+            setSummaryError(error.message || "An unknown error occurred while generating the summary.");
+        } finally {
+            setIsSummarizing(false);
+        }
     };
 
     // Return public interface of the hook
@@ -246,6 +345,12 @@ export const useConversation = () => {
         handleSubmit,
         handleStartOver,
         currentQuestionIndex,
-        showSafetyResetButton
+        showSafetyResetButton,
+        // Expose new state and function for summarization
+        videoSummary,
+        isSummarizing,
+        summaryError,
+        generateConceptSummary,
+        isConversationProcessingComplete
     };
 }; 
