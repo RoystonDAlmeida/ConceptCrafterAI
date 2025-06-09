@@ -3,7 +3,7 @@
 // Define interfaces for type safety
 interface Message {
     content: string;
-    role: string;
+    role: 'user' | 'ai';
     timestamp: number;
     id: string;
 }
