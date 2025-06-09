@@ -17,6 +17,7 @@ export const useConversation = () => {
     const [llmConversationHistory, setLlmConversationHistory] = useState<Message[]>([]); // History for AI context
     const [sessionId] = useState(() => generateId()); // Unique session identifier
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0); // Tracks current question in sequence
+    const [showSafetyResetButton, setShowSafetyResetButton] = useState(false); // Controls visibility of a reset button after a safety error
 
     // System instructions for the AI model
     const systemInstructionForLLM = `You are ConceptCrafterAI, a friendly and highly efficient assistant. Your goal is to help the user develop a video concept by asking a series of questions.
@@ -182,10 +183,21 @@ export const useConversation = () => {
             }
         } catch (error) {
             console.error("Failed to get AI response:", error);
-            const errorMessage = createMessage(
-                `Sorry, I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`,
-                'ai'
-            );
+            let errorMessageContent = `Sorry, I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`;
+
+            const safetyErrorPattern = /response blocked due to safety settings/i; // Case-insensitive regex
+            let shouldShowButton = false;
+
+            if (error instanceof Error && typeof error.message === 'string') {
+                if (safetyErrorPattern.test(error.message)) {
+                    shouldShowButton = true;
+                }
+            }
+            
+            if (shouldShowButton) {
+                setShowSafetyResetButton(true);
+            }
+            const errorMessage = createMessage(errorMessageContent, 'ai');
             setMessages(prevMessages => [...prevMessages, errorMessage]);
             setLlmConversationHistory(prevLlmHistory => [...prevLlmHistory, errorMessage]);
         } finally {
@@ -219,6 +231,7 @@ export const useConversation = () => {
         setConversationComplete(false);
         setLlmConversationHistory([]);
         setCurrentQuestionIndex(0);
+        setShowSafetyResetButton(false); // Reset the safety error flag
 
         const welcome = createMessage(`${initialMessage.text} ${questions[0].text}`, 'ai');
         setMessages([welcome]);
@@ -232,6 +245,7 @@ export const useConversation = () => {
         conversationComplete,
         handleSubmit,
         handleStartOver,
-        currentQuestionIndex
+        currentQuestionIndex,
+        showSafetyResetButton
     };
 }; 
