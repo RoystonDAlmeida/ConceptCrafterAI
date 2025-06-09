@@ -8,16 +8,24 @@
   ],
   "routes": [
     {
-      "src": "/api/conversation/process_conversation",
-      "dest": "/api/conversation/process_conversation.js"
-    },
-    {
       "src": "/api/gemini-chat",
       "dest": "/api/gemini-chat.js"
     },
     {
       "src": "/api/save-conversation",
       "dest": "/api/save-conversation.js"
+    },
+    {
+      "src": "/api/conversation/process_conversation",
+      "dest": "/api/conversation/process_conversation.js"
+    },
+    {
+      "src": "/api/summarize-conversation",
+      "dest": "/api/summarize-conversation.js"
+    },
+    {
+      "src": "/api/save-summary",
+      "dest": "/api/save-summary.js"
     }
   ]
 } 
