@@ -3,37 +3,15 @@
  * Handles message history, concept data collection, and conversation state.
  */
 import { useState } from 'react';
-import { Message } from '../types';
+import type { Message, VideoConceptSummary, ConceptData as DynamicConceptData } from '../types';
 import { questions, initialMessage } from '../data/questions';
 import { generateId } from '../utils/idGenerator';
 import { processConversation } from '../services/conversationProcessor';
 
-// Define the structure for the video concept summary
-export interface VideoConceptSummary {
-    videoTitleSuggestion: string;
-    coreConcept: string;
-    targetAudience: {
-        description: string;
-        keyTakeaways: string[];
-    };
-    keyMessages: string[];
-    visualElements: {
-        style: string;
-        moodTone: string;
-        imagerySuggestions: string[];
-        colorPalette: string;
-    };
-    contentStructureOutline: Array<{
-        section: string;
-        description: string;
-    }>;
-    additionalNotes: string;
-}
-
 export const useConversation = () => {
     // State management for conversation
     const [messages, setMessages] = useState<Message[]>([]); // All messages in the conversation
-    const [conceptData, setConceptData] = useState<Record<string, string>>({}); // Stores concept details by category
+    const [conceptData, setConceptData] = useState<DynamicConceptData>({}); // Stores concept details by category
     const [isTyping, setIsTyping] = useState(false); // Indicates if AI is currently generating a response
     const [conversationComplete, setConversationComplete] = useState(false); // Tracks if conversation is finished
     const [llmConversationHistory, setLlmConversationHistory] = useState<Message[]>([]); // History for AI context
@@ -84,7 +62,7 @@ export const useConversation = () => {
      */
     const saveConversationToBackend = async (
         conversationMessages: Message[],
-        finalConceptData: Record<string, string>,
+        finalConceptData: DynamicConceptData,
         currentSessionId: string
     ) => {
         try {
@@ -351,6 +329,8 @@ export const useConversation = () => {
         isSummarizing,
         summaryError,
         generateConceptSummary,
-        isConversationProcessingComplete
+        isConversationProcessingComplete,
+        sessionId,
+        setVideoSummary, // Expose the setter
     };
 }; 
