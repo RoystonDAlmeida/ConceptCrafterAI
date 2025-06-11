@@ -52,14 +52,21 @@ app.post('/api/save-summary', async (req, res) => {
         const summaryRef = db.collection('summarized_conversations').doc(sessionId);
         const dataToSave = {
             ...summary, // Spread the summary object received from the client
-            sessionId: sessionId, // Explicitly save sessionId as a field too
-            savedAt: admin.firestore.FieldValue.serverTimestamp() // Use server timestamp
+            sessionId: sessionId,
+
+            // If summary object from client might already have savedAt, preserve it on first save, otherwise set new.
+            savedAt: summary.savedAt || admin.firestore.FieldValue.serverTimestamp(), 
+            lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
         };
         await summaryRef.set(dataToSave);
+        const updatedDoc = await summaryRef.get(); // Fetch the updated document
+
         console.log(`Summary for session ${sessionId} saved successfully to 'summarized_conversations'.`);
-        return res.status(200).json({ success: true, message: 'Summary saved successfully.' });
+        // Return the updated document data, which will include server-generated timestamps
+        return res.status(200).json({ success: true, message: 'Summary saved successfully.', data: updatedDoc.data() });
     } catch (error) {
         console.error('Error saving summary to Firebase:', error);
+        
         const errorMessage = error instanceof Error ? error.message : 'Unknown server error';
         return res.status(500).json({ success: false, error: 'Failed to save summary.', details: errorMessage });
     }
