@@ -26,6 +26,10 @@
     {
       "src": "/api/save-summary",
       "dest": "/api/save-summary.js"
+    },
+    {
+      "src": "/api/generate-summary-pdf",
+      "dest": "/api/generate-summary-pdf.js"
     }
   ]
 } 
