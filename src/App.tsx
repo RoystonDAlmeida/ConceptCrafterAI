@@ -1,139 +1,193 @@
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useConversation } from './hooks/useConversation';
-import { MessageList } from './components/MessageList';
 import { ChatInput } from './components/ChatInput';
 import { Header } from './components/Header';
-import { ProgressBar } from './components/ProgressBar';
-import { questions } from './data/questions';
+import { ReviewEditPage } from './components/ReviewEditPage';
+import type { VideoConceptSummary } from './types';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
+// Import sub components
+import { usePdfActions } from './hooks/usePdfActions';
+import { PdfPreviewModal } from './components/PdfPreviewModal';
+import { ChatArea } from './components/ChatArea';
+import { SafetyResetUI } from './components/SafetyResetUI';
+import { ConversationCompletionActions } from './components/ConversationCompletionActions';
 
 function App() {
     const {
         messages,
         isTyping,
         conversationComplete,
-        handleSubmit,
-        handleStartOver,
+        handleSubmit: handleChatMessageSubmit,
+        handleStartOver: handleConversationStartOver,
         currentQuestionIndex,
         showSafetyResetButton,
+
         // Destructure new summarization states and function
         videoSummary,
         isSummarizing,
         summaryError,
         generateConceptSummary,
+
+        sessionId, 
         isConversationProcessingComplete,
+        setVideoSummary,
     } = useConversation();
+
+    // State for managing the summary editing and approval UI flow
+    const [isEditingSummary, setIsEditingSummary] = useState(false);
+    const [isSummaryApproved, setIsSummaryApproved] = useState(false);
+    const [approvedSummaryForPdf, setApprovedSummaryForPdf] = useState<VideoConceptSummary | null>(null);
+    
+    // State for errors primarily from summary saving operations
+    const [saveSummaryError, setSaveSummaryError] = useState<string | null>(null);
+
+    // PDF related actions and state are managed by this custom hook
+    const {
+        isPreviewingPdf,
+        pdfPreviewUrl,
+        pdfError,
+        handlePreviewPdf,
+        handleDownloadFinalPdf,
+        handleClosePdfPreview,
+        clearPdfError,
+    } = usePdfActions();
 
     // Initialize with AI welcome message
     useEffect(() => {
-        handleStartOver();
+        handleConversationStartOver();
     }, []);
 
-    // Optionally, automatically generate summary when conversation completes and no safety reset is active
-    useEffect(() => {
-        if (conversationComplete && isConversationProcessingComplete && !videoSummary && !isSummarizing && !summaryError && !showSafetyResetButton) {
-            // generateConceptSummary(); // Uncomment to auto-generate summary
-        }
-    }, [conversationComplete, isConversationProcessingComplete, videoSummary, isSummarizing, summaryError, showSafetyResetButton, generateConceptSummary]);
+    /**
+     * Callback to process a newly generated or updated summary.
+     * It sets the summary for display and PDF actions, and resets UI flags
+     * to ensure the user is directed to the review step first.
+     */
+    const onSummaryGeneratedOrUpdated = useCallback((summary: VideoConceptSummary) => {
+        setVideoSummary(summary);
+        setApprovedSummaryForPdf(summary); // Set this for PDF actions
+        setIsSummaryApproved(false);
+        setIsEditingSummary(false);       // Ensure edit mode is off
+        clearPdfError(); // Clear any previous PDF errors
+    }, [setVideoSummary, clearPdfError]);
 
+    // This useEffect will handle setting the approved state after initial summary generation
+    useEffect(() => { 
+        if (videoSummary && !isSummarizing && !summaryError && !isEditingSummary && !isSummaryApproved) { onSummaryGeneratedOrUpdated(videoSummary); } 
+    }, [videoSummary, isSummarizing, summaryError, isEditingSummary, isSummaryApproved, onSummaryGeneratedOrUpdated]);
+
+    // This function will now be the primary way to save/update the summary in Firestore.
+    const updateSummaryInFirestore = async (summaryToSave: VideoConceptSummary) => {
+        setSaveSummaryError(null);
+        console.log(`Updating summary in Firestore for session ${sessionId}:`, summaryToSave);
+        try {
+            const response = await fetch('/api/save-summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: sessionId, summary: summaryToSave }),
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({ error: "Failed to save summary."}));
+                throw new Error(errData.error || "Failed to save summary to Firestore.");
+            }
+
+            const result = await response.json();
+            console.log("Summary successfully updated in Firestore.");
+
+            // Use the data returned from the server, which includes the server-generated timestamps
+            setVideoSummary(result.data as VideoConceptSummary); 
+            setApprovedSummaryForPdf(result.data as VideoConceptSummary); 
+            setIsSummaryApproved(true); // Mark as "approved" after review & save, enabling PDF options
+            setIsEditingSummary(false); // Close the edit page
+
+            toast.success("Changes saved successfully!");
+        } catch (error: any) {
+            console.error("Error saving summary changes:", error);
+            const errMsg = `Failed to save changes: ${error.message}`;
+
+            setSaveSummaryError(errMsg);
+            toast.error(errMsg);
+            throw error; 
+        }
+    };
+
+    // Wrapper function to handle full start over, including App-specific UI states
+    const handleFullStartOver = useCallback(() => {
+        handleConversationStartOver();
+
+        setIsEditingSummary(false);
+        setIsSummaryApproved(false);
+        setApprovedSummaryForPdf(null);
+        setSaveSummaryError(null);
+        
+        handleClosePdfPreview(); // Also closes PDF preview and clears its errors
+    }, [handleConversationStartOver, handleClosePdfPreview]);
+
+    // Dynamic padding for the main content area
+    const getMainContentPaddingBottom = () => {
+        if (!conversationComplete && !showSafetyResetButton) return '5rem'; // Chat input visible
+        if (conversationComplete && !videoSummary && !showSafetyResetButton && !isEditingSummary && !isSummaryApproved) return '6rem'; // Space for generate summary button
+        
+        return '1rem';
+    };
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-indigo-50 to-slate-50 flex flex-col">
             <Header />
+            <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} newestOnTop={false} closeOnClick rtl={false} pauseOnFocusLoss draggable pauseOnHover theme="colored" />
             
-            {/* Main Content Area - with bottom padding for fixed input */}
+            {/* Main Content Area - paddingBottom is dynamically adjusted */}
             <div className="flex-1 max-w-4xl mx-auto w-full p-4" 
-                 style={{
-                    paddingBottom: (conversationComplete && !videoSummary && !showSafetyResetButton) ? '6rem' : // Space for generate summary button
-                                   (conversationComplete && (videoSummary || showSafetyResetButton)) ? '1rem' : '5rem' // Normal padding otherwise
+                 style={{ 
+                    paddingBottom: getMainContentPaddingBottom()
                  }}>
-                {/* Main chat box - fixed height like original */}
-                <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-xl flex flex-col overflow-hidden" 
-                     style={{ height: 'calc(100vh - 12rem)' }}>
-                    <ProgressBar 
-                        currentStep={currentQuestionIndex + 1} 
-                        totalSteps={questions.length} 
+                
+                {pdfPreviewUrl ? (
+                    <PdfPreviewModal pdfUrl={pdfPreviewUrl} onClose={handleClosePdfPreview} />
+                ) : isEditingSummary && videoSummary ? (
+                    <ReviewEditPage
+                        initialSummary={videoSummary}
+                        onSave={updateSummaryInFirestore} // "Save Changes" in ReviewEditPage calls this
+                        onCancel={() => { setIsEditingSummary(false); setSaveSummaryError(null); handleClosePdfPreview(); }}
                     />
-                    
-                    {/* Message List Container - takes available space and is scrollable */}
-                    <div className="flex-1 overflow-y-auto">
-                        <div className="p-4">
-                            <MessageList 
-                                messages={messages.map(msg => ({
-                                    ...msg,
-                                    role: msg.role === 'ai' ? 'assistant' : 'user'
-                                }))} 
-                                isTyping={isTyping} 
+                ) : (
+                <>
+                    <ChatArea
+                        messages={messages}
+                        isTyping={isTyping}
+                        currentQuestionIndex={currentQuestionIndex}
+                    />
+
+                    {/* Conditional UI for post-chat actions or safety reset */}
+                    <div className="mt-4 flex-shrink-0">
+                        {showSafetyResetButton ? (
+                            <SafetyResetUI onStartNewConversation={handleFullStartOver} />
+                        ) : conversationComplete ? (
+                            <ConversationCompletionActions
+                                isConversationProcessingComplete={isConversationProcessingComplete}
+                                videoSummary={videoSummary}
+                                isSummarizing={isSummarizing}
+                                summaryError={summaryError}
+                                saveSummaryError={saveSummaryError} 
+                                pdfError={pdfError} 
+                                isSummaryApproved={isSummaryApproved}
+                                isPreviewingPdf={isPreviewingPdf}
+                                onGenerateConceptSummary={generateConceptSummary}
+                                onEditSummary={() => setIsEditingSummary(true)}
+                                onPreviewPdf={() => handlePreviewPdf(approvedSummaryForPdf)}
+                                onDownloadPdf={() => handleDownloadFinalPdf(approvedSummaryForPdf)}
+                                onReEditSummary={() => {
+                                    setIsEditingSummary(true);
+                                    setIsSummaryApproved(false);
+                                }}
+                                onStartNewConversation={handleFullStartOver}
                             />
-                        </div>
+                        ) : null}
                     </div>
-                    
-                    {/* Conditional Buttons / Summary Display at the bottom of the chat box */}
-                    {showSafetyResetButton ? (
-                        <div className="p-4 border-t border-red-300 flex-shrink-0 bg-red-50">
-                            <p className="text-center text-red-700 mb-2 text-sm">
-                                Your previous input led to an automated safety block.
-                            </p>
-                            <button
-                                onClick={handleStartOver}
-                                className="w-full bg-red-600 text-white py-2.5 rounded-lg hover:bg-red-700 transition-all duration-200 shadow-md font-medium"
-                            >
-                                Start New Conversation
-                            </button>
-                        </div>
-                    ) : conversationComplete ? (
-                        <div className="p-4 border-t border-indigo-200 flex-shrink-0 space-y-3">
-                            {isConversationProcessingComplete && !videoSummary && !isSummarizing && !summaryError && (
-                                <button
-                                    onClick={generateConceptSummary}
-                                    className="w-full bg-gradient-to-r from-green-500 to-teal-500 text-white py-2.5 rounded-lg hover:from-green-600 hover:to-teal-600 transition-all duration-200 shadow-md font-medium"
-                                >
-                                    Generate Concept Summary
-                                </button>
-                            )}
-                            {!isConversationProcessingComplete && !isSummarizing && !summaryError && (
-                                <div className="text-center py-2.5 text-indigo-500 text-sm">
-                                    Processing conversation, please wait...
-                                </div>
-                            )}
-                            {isSummarizing && (
-                                <div className="text-center py-2.5 text-indigo-700 font-medium">
-                                    Generating summary...
-                                    <div className="flex justify-center items-center space-x-1 mt-2">
-                                    <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce [animation-delay:0s]" />
-                                    <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce [animation-delay:0.1s]"/>
-                                    <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce [animation-delay:0.2s]"/>
-                                    </div>
-                                </div>
-                            )}
-                            {summaryError && !isSummarizing && (
-                                <div className="text-center text-red-600 bg-red-50 p-3 rounded-md text-sm">
-                                    <p className="font-semibold">Error generating summary:</p>
-                                    <p>{summaryError}</p>
-                                </div>
-                            )}
-                            {videoSummary && !isSummarizing && (
-                                <div className="bg-indigo-50 p-3 rounded-lg shadow">
-                                    <h3 className="text-lg font-semibold text-indigo-700 mb-2">Video Concept Summary:</h3>
-                                    <p className="text-sm text-gray-700 truncate"><strong>Title:</strong> {videoSummary.videoTitleSuggestion}</p>
-                                    <p className="text-sm text-gray-700 truncate"><strong>Concept:</strong> {videoSummary.coreConcept}</p>
-                                    {/* You can add more details from the summary here or a link/modal to a full summary view */}
-                                    <button
-                                        onClick={() => alert(JSON.stringify(videoSummary, null, 2))} // Placeholder for better display
-                                        className="mt-2 text-sm text-indigo-600 hover:text-indigo-800 font-medium"
-                                    >
-                                        View Full Summary Details
-                                    </button>
-                                </div>
-                            )}
-                             <button
-                                 onClick={handleStartOver}
-                                 className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-2.5 rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-all duration-200 shadow-md font-medium"
-                             >
-                                 Start New Conversation
-                             </button>
-                        </div>
-                    ) : null}
-                </div>
+                </>
+                )}
             </div>
             
             {/* Chat Input - Fixed at bottom of screen */}
@@ -143,7 +197,7 @@ function App() {
                     <div className="max-w-4xl mx-auto w-full px-4">
                         <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-lg border-2 border-purple-700 p-2">
                             <ChatInput 
-                                onSubmit={handleSubmit} 
+                                onSubmit={handleChatMessageSubmit} 
                                 isTyping={isTyping} 
                                 showSafetyResetButton={showSafetyResetButton} />
                         </div>
